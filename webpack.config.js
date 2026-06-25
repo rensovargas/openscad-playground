@@ -57,9 +57,9 @@ const config = [
     },
     resolve: {
       extensions: ['.tsx', '.ts', '.js'],
-      alias: {
-        'node:fs': false,
-        'node:path': false,
+      fallback: {
+        fs: false,
+        path: false,
       },
     },
     output: {
@@ -76,6 +76,11 @@ const config = [
       },
     },
     plugins: [
+      // Strip the "node:" URI scheme prefix so webpack's resolve.fallback can
+      // handle built-in modules (e.g. @gltf-transform/core uses import("node:fs")).
+      new webpack.NormalModuleReplacementPlugin(/^node:/, (resource) => {
+        resource.request = resource.request.replace(/^node:/, '');
+      }),
       new webpack.EnvironmentPlugin({
         'process.env.NODE_ENV': 'development',
       }),
