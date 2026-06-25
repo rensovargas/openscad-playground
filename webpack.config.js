@@ -57,6 +57,10 @@ const config = [
     },
     resolve: {
       extensions: ['.tsx', '.ts', '.js'],
+      alias: {
+        'node:fs': false,
+        'node:path': false,
+      },
     },
     output: {
       filename: 'index.js',
@@ -66,6 +70,10 @@ const config = [
       static: path.join(__dirname, 'dist'),
       compress: true,
       port: 4000,
+      headers: {
+        'Cross-Origin-Opener-Policy': 'same-origin',
+        'Cross-Origin-Embedder-Policy': 'require-corp',
+      },
     },
     plugins: [
       new webpack.EnvironmentPlugin({
