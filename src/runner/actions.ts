@@ -8,7 +8,7 @@ import { Source } from '../state/app-state.ts';
 import { VALID_EXPORT_FORMATS_2D, VALID_EXPORT_FORMATS_3D } from '../state/formats.ts';
 import { ParameterSet } from '../state/customizer-types.ts';
 
-const syntaxDelay = 300;
+const syntaxDelay = 400;
 
 type SyntaxCheckArgs = {
   activePath: string,
