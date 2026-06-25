@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "main": "electron/main.js",
   "homepage": "https://ochafik.com/openscad2/",
   "dependencies": {
     "@gltf-transform/core": "^4.1.1",
@@ -37,7 +38,9 @@
     "build:libs:clean": "LIBS_BUILD_MODE=clean webpack --config webpack.libs.config.js",
     "build:libs:wasm": "LIBS_BUILD_MODE=wasm webpack --config webpack.libs.config.js",
     "build:libs:fonts": "LIBS_BUILD_MODE=fonts webpack --config webpack.libs.config.js",
-    "build:all": "npm run build:libs && npm run build"
+    "build:all": "npm run build:libs && npm run build",
+    "electron:dev": "concurrently \"npm start\" \"wait-on http://localhost:4000 && electron .\"",
+    "electron:build": "npm run build && electron-builder"
   },
   "eslintConfig": {
     "extends": [
@@ -59,6 +62,26 @@
   },
   "engines": {
     "node": ">=18.12.0"
+  },
+  "build": {
+    "appId": "com.openscad-editor.app",
+    "productName": "OpenSCAD Editor",
+    "files": [
+      "dist/**/*",
+      "electron/**/*"
+    ],
+    "directories": {
+      "output": "dist-electron"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   },
   "devDependencies": {
     "@types/chroma-js": "^2.4.5",
