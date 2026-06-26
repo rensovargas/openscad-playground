@@ -6,7 +6,7 @@ import { ParsedFile, ParsedFunctionoidDef, parseOpenSCAD, stripComments } from '
 import builtinSignatures from './openscad-builtins'
 import { mapObject } from '../utils';
 import { ZipArchives } from '../fs/zip-archives';
-import openscadLanguage from './openscad-language';
+import openscadLanguage, { keywordsList, builtinsList, specialVarsList } from './openscad-language';
 
 function makeFunctionoidSuggestion(name: string, mod: ParsedFunctionoidDef) {
   const argSnippets: string[] = [];
@@ -41,18 +41,24 @@ function makeFunctionoidSuggestion(name: string, mod: ParsedFunctionoidDef) {
 }
 
 const builtinCompletions = [
-  ...[true, false].map(v => ({
-    label: `${v}`,
-    kind: monaco.languages.CompletionItemKind.Value,
-    insertText: `${v}`,
-    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
+  ...keywordsList.map(v => ({
+    label: v,
+    kind: monaco.languages.CompletionItemKind.Keyword,
+    insertText: v,
+    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
   })),
-  ...openscadLanguage.language.keywords.map((v: string) => ({
+  ...builtinsList.map(v => ({
     label: v,
     kind: monaco.languages.CompletionItemKind.Function,
     insertText: v,
-    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet
-  }))
+    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+  })),
+  ...specialVarsList.map(v => ({
+    label: v,
+    kind: monaco.languages.CompletionItemKind.Variable,
+    insertText: v.replaceAll('$', '\\$'),
+    insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+  })),
 ];
 
 const keywordSnippets = [
