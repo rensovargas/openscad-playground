@@ -2,35 +2,40 @@
 
 import * as monaco from 'monaco-editor/esm/vs/editor/editor.api';
 
-const builtInFunctionNames = [
-  'abs',
-    'acos', 'asin', 'atan', 'atan2', 'ceil',
-    'len', 'let', 'ln', 'log',
-    'lookup', 'max', 'min', 'sqrt', 'tan', 'rands',
-    'search', 'sign', 'sin', 'str', 'norm', 'pow', 
-    'concat', 'cos', 'cross', 'floor', 'exp', 
-    'chr',
+export const keywordsList = [
+  'module', 'function', 'for', 'if', 'else', 'let', 'each',
+  'use', 'include',
 ];
-const builtInModuleNames = [
-  'children',
-  'circle', 'color', 'cube', 'cylinder',
-  'diameter', 'difference', 'echo', 'extrude', 
-  'for', 'function', 'hull', 'if', 'include',
-  'intersection_for', 'intersection',  'linear',  'minkowski', 'mirror', 'module', 'multmatrix',
-  'offset', 'polyhedron', 'projection', 'radius', 
-  'render', 'resize', 'rotate', 'round', 'scale', 
-  'sphere', 'square', 'surface', 'translate', 
-  'union', 'use', 'value', 'version', 
+
+export const builtinsList = [
+  // Math functions
+  'abs', 'acos', 'asin', 'atan', 'atan2', 'ceil', 'cos', 'cross',
+  'exp', 'floor', 'ln', 'log', 'lookup', 'max', 'min', 'norm', 'pow',
+  'rands', 'round', 'search', 'sign', 'sin', 'sqrt', 'tan',
+  // String / list functions
+  'chr', 'concat', 'len', 'ord', 'str',
+  // Shapes
+  'circle', 'cube', 'cylinder', 'polygon', 'polyhedron', 'sphere', 'square',
+  // Transforms
+  'color', 'mirror', 'multmatrix', 'resize', 'rotate', 'scale', 'translate',
+  // Boolean / hull
+  'difference', 'hull', 'intersection', 'minkowski', 'union',
+  // Extrude / project
+  'linear_extrude', 'offset', 'projection', 'rotate_extrude',
+  // Misc
+  'assert', 'children', 'echo', 'import', 'intersection_for',
+  'render', 'surface', 'text', 'version', 'version_num',
 ];
-const builtInVarNames = [
-  'false', 'true', 'PI', 'undef', '$children',
-  '$fa', '$fn', '$fs', '$t', '$vpd', '$vpr', '$vpt',
-]
+
+export const specialVarsList = [
+  'true', 'false', 'undef', 'PI',
+  '$children', '$fa', '$fn', '$fs', '$t', '$vpd', '$vpr', '$vpt',
+];
 
 var conf: monaco.languages.LanguageConfiguration = {
 
-  colorizedBracketPairs: [['{', '}'], ['(', ')'], ['[', ']']], 
-  
+  colorizedBracketPairs: [['{', '}'], ['(', ')'], ['[', ']']],
+
   wordPattern: /(-?\d*\.\d\w*)|([^\`\~\!\@\#\%\^\&\*\(\)\-\=\+\[\{\]\}\\\|\;\:\'\"\,\.\<\>\/\?\s]+)/g,
   comments: {
     lineComment: "//",
@@ -91,32 +96,16 @@ var conf: monaco.languages.LanguageConfiguration = {
 
 var language: monaco.languages.IMonarchLanguage = {
   defaultToken: "invalid",
-  tokenPostfix: ".js",
-  keywords: [...builtInFunctionNames, ...builtInModuleNames, ...builtInVarNames, 'each'],
-  typeKeywords: [],
+  tokenPostfix: ".scad",
+  keywords: keywordsList,
+  builtins: builtinsList,
+  specialVars: specialVarsList,
   operators: [
-    "<=",
-    ">=",
-    "==",
-    "!=",
-    "=>",
-    "+",
-    "-",
-    "*",
-    "/",
-    "%",
-    "<<",
-    ">>",
-    ">>>",
-    "&",
-    "|",
-    "^",
-    "!",
-    "&&",
-    "||",
-    "?",
-    ":",
-    "=",
+    "<=", ">=", "==", "!=", "=>",
+    "+", "-", "*", "/", "%",
+    "<<", ">>", ">>>",
+    "&", "|", "^", "!", "&&", "||",
+    "?", ":", "=",
   ],
   symbols: /[=><!~?:&|+\-*\/\^%]+/,
   escapes: /\\[abfnrtv\\"']/,
@@ -125,10 +114,12 @@ var language: monaco.languages.IMonarchLanguage = {
     root: [[/[{}]/, "delimiter.bracket"], { include: "common" }],
     common: [
       [
-        /[a-z_$][\w$]*/,
+        /\$?[a-z_][\w$]*/,
         {
           cases: {
             "@keywords": "keyword",
+            "@builtins": "type",
+            "@specialVars": "variable",
             "@default": "identifier"
           }
         }
