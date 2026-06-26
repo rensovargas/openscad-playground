@@ -4,6 +4,8 @@ import { CSSProperties, useCallback, useContext, useEffect, useRef, useState } f
 import { ModelContext } from './contexts.ts';
 import { Toast } from 'primereact/toast';
 import { blurHashToImage, imageToBlurhash, imageToThumbhash, thumbHashToImage } from '../io/image_hashes.ts';
+import { useLocalStorage } from '../hooks/useLocalStorage';
+import ThreeViewer, { ThreeViewerHandle } from './ThreeViewer';
 
 declare global {
   namespace JSX {
@@ -59,6 +61,8 @@ export default function ViewerPanel({className, style}: {className?: string, sty
   const modelViewerRef = useRef<any>();
   const axesViewerRef = useRef<any>();
   const toastRef = useRef<Toast>(null);
+  const [viewerEngine, setViewerEngine] = useLocalStorage<'model-viewer' | 'three'>('viewer-engine', 'model-viewer');
+  const threeViewerRef = useRef<ThreeViewerHandle>(null);
 
   const [loadedUri, setLoadedUri] = useState<string | undefined>();
 
@@ -169,17 +173,59 @@ export default function ViewerPanel({className, style}: {className?: string, sty
     };
   });
 
+  const setView = useCallback((name: string, theta: number, phi: number) => {
+    if (viewerEngine === 'model-viewer') {
+      const orbit = `${theta}rad ${phi}rad auto`;
+      if (modelViewerRef.current) modelViewerRef.current.cameraOrbit = orbit;
+      if (axesViewerRef.current) axesViewerRef.current.cameraOrbit = orbit;
+    } else {
+      threeViewerRef.current?.setCameraView(theta, phi);
+    }
+    toastRef.current?.show({ severity: 'info', detail: `${name} view`, life: 1000 });
+  }, [viewerEngine]);
+
   return (
     <div className={className}
           style={{
               display: 'flex',
-              flexDirection: 'column', 
+              flexDirection: 'column',
               position: 'relative',
-              flex: 1, 
+              flex: 1,
               width: '100%',
               ...(style ?? {})
           }}>
-      <Toast ref={toastRef} position='top-right'  />
+      {/* Toolbar: view preset buttons + engine toggle */}
+      <div style={{
+        position: 'absolute',
+        top: 4,
+        left: 4,
+        right: 4,
+        zIndex: 20,
+        display: 'flex',
+        gap: '4px',
+        alignItems: 'center',
+        pointerEvents: 'none',
+      }}>
+        {PREDEFINED_ORBITS.map(([name, theta, phi]) => (
+          <button
+            key={name as string}
+            onClick={() => setView(name as string, theta as number, phi as number)}
+            style={{ fontSize: '11px', padding: '2px 6px', cursor: 'pointer', pointerEvents: 'all' }}
+          >
+            {name as string}
+          </button>
+        ))}
+        <div style={{ flex: 1 }} />
+        <button
+          onClick={() => setViewerEngine(viewerEngine === 'model-viewer' ? 'three' : 'model-viewer')}
+          style={{ fontSize: '11px', padding: '2px 8px', cursor: 'pointer', pointerEvents: 'all' }}
+          title="Switch viewer engine"
+        >
+          {viewerEngine === 'model-viewer' ? 'Three.js' : 'Classic'}
+        </button>
+      </div>
+
+      <Toast ref={toastRef} position='top-right' />
       <style>
         {`
           @keyframes pulse {
@@ -190,69 +236,84 @@ export default function ViewerPanel({className, style}: {className?: string, sty
         `}
       </style>
 
-      {!loaded && cachedImageHash && 
+      {viewerEngine === 'model-viewer' && !loaded && cachedImageHash &&
         <img
-        src={cachedImageHash.uri}
-        style={{
-          animation: 'pulse 1.5s ease-in-out infinite',
-          position: 'absolute',
-          pointerEvents: 'none',
-          width: '100%',
-          height: '100%'
-        }} />
+          src={cachedImageHash.uri}
+          style={{
+            animation: 'pulse 1.5s ease-in-out infinite',
+            position: 'absolute',
+            pointerEvents: 'none',
+            width: '100%',
+            height: '100%',
+          }}
+        />
       }
 
-      <model-viewer
-        orientation="0deg -90deg 0deg"
-        class="main-viewer"
-        src={modelUri}
-        style={{
-          transition: 'opacity 0.5s',
-          opacity: loaded ? 1 : 0,
-          position: 'absolute',
-          width: '100%',
-          height: '100%',
-        }}
-        camera-orbit={originalOrbit}
-        interaction-prompt={interactionPrompt}
-        environment-image="./skybox-lights.jpg"
-        max-camera-orbit="auto 180deg auto"
-        min-camera-orbit="auto 0deg auto"
-        camera-controls
-        ar
-        ref={modelViewerRef}
-      >
-        <span slot="progress-bar"></span>
-      </model-viewer>
-      {state.view.showAxes && (
+      {/* Classic viewer (model-viewer web component) */}
+      <div style={{
+        display: viewerEngine === 'model-viewer' ? 'block' : 'none',
+        position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+      }}>
         <model-viewer
-                orientation="0deg -90deg 0deg"
-                src="./axes.glb"
-                style={{
-                  position: 'absolute',
-                  bottom: 0,
-                  left: 0,
-                  zIndex: 10,
-                  height: '100px',
-                  width: '100px',
-                }}
-                loading="eager"
-                camera-orbit={originalOrbit}
-                // interpolation-decay="0"
-                environment-image="./skybox-lights.jpg"
-                max-camera-orbit="auto 180deg auto"
-                min-camera-orbit="auto 0deg auto"
-                orbit-sensitivity="5"
-                interaction-prompt="none"
-                camera-controls="false"
-                disable-zoom
-                disable-tap 
-                disable-pan
-                ref={axesViewerRef}
+          orientation="0deg -90deg 0deg"
+          class="main-viewer"
+          src={modelUri}
+          style={{
+            transition: 'opacity 0.5s',
+            opacity: loaded ? 1 : 0,
+            position: 'absolute',
+            width: '100%',
+            height: '100%',
+          }}
+          camera-orbit={originalOrbit}
+          interaction-prompt={interactionPrompt}
+          environment-image="./skybox-lights.jpg"
+          max-camera-orbit="auto 180deg auto"
+          min-camera-orbit="auto 0deg auto"
+          camera-controls
+          ar
+          ref={modelViewerRef}
         >
           <span slot="progress-bar"></span>
         </model-viewer>
-      )}
+        {state.view.showAxes && (
+          <model-viewer
+            orientation="0deg -90deg 0deg"
+            src="./axes.glb"
+            style={{
+              position: 'absolute',
+              bottom: 0,
+              left: 0,
+              zIndex: 10,
+              height: '100px',
+              width: '100px',
+            }}
+            loading="eager"
+            camera-orbit={originalOrbit}
+            environment-image="./skybox-lights.jpg"
+            max-camera-orbit="auto 180deg auto"
+            min-camera-orbit="auto 0deg auto"
+            orbit-sensitivity="5"
+            interaction-prompt="none"
+            camera-controls="false"
+            disable-zoom
+            disable-tap
+            disable-pan
+            ref={axesViewerRef}
+          >
+            <span slot="progress-bar"></span>
+          </model-viewer>
+        )}
+      </div>
+
+      {/* Three.js viewer */}
+      <div style={{
+        display: viewerEngine === 'three' ? 'block' : 'none',
+        position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
+      }}>
+        <ThreeViewer ref={threeViewerRef} stlUrl={state.output?.outFileURL ?? null} />
+      </div>
+
     </div>
-  )
+  );
 }
