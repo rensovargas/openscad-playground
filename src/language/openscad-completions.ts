@@ -6,7 +6,7 @@ import { ParsedFile, ParsedFunctionoidDef, parseOpenSCAD, stripComments } from '
 import builtinSignatures from './openscad-builtins'
 import { mapObject } from '../utils';
 import { ZipArchives } from '../fs/zip-archives';
-import openscadLanguage, { keywordsList, builtinsList, specialVarsList } from './openscad-language';
+import { keywordsList, builtinsList, specialVarsList } from './openscad-language';
 
 function makeFunctionoidSuggestion(name: string, mod: ParsedFunctionoidDef) {
   const argSnippets: string[] = [];
