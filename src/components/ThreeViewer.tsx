@@ -1,6 +1,8 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import {
   AmbientLight,
+  BufferAttribute,
+  BufferGeometry,
   DirectionalLight,
   Mesh,
   MeshStandardMaterial,
@@ -10,19 +12,19 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import { STLLoader } from 'three/examples/jsm/loaders/STLLoader.js';
+import { parseOff } from '../io/import_off';
 
 export interface ThreeViewerHandle {
   setCameraView(theta: number, phi: number): void;
 }
 
 interface ThreeViewerProps {
-  stlUrl: string | null;
+  meshDataUrl: string | null;
   active: boolean;
 }
 
 const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
-  ({ stlUrl, active }, ref) => {
+  ({ meshDataUrl, active }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<WebGLRenderer | null>(null);
     const cameraRef = useRef<PerspectiveCamera | null>(null);
@@ -100,18 +102,31 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
       };
     }, []);
 
-    // Reload geometry when stlUrl changes
+    // Reload geometry when meshDataUrl changes
     useEffect(() => {
-      if (!stlUrl) return;
+      if (!meshDataUrl) return;
       if (!active) return;
       const abort = new AbortController();
 
-      fetch(stlUrl, { signal: abort.signal })
-        .then(r => r.arrayBuffer())
-        .then(buffer => {
+      fetch(meshDataUrl, { signal: abort.signal })
+        .then(r => r.text())
+        .then(text => {
           if (abort.signal.aborted) return;
 
-          const geometry = new STLLoader().parse(buffer);
+          const polyhedron = parseOff(text);
+          const positions = new Float32Array(polyhedron.vertices.length * 3);
+          polyhedron.vertices.forEach((v, i) => {
+            positions[i * 3] = v.x;
+            positions[i * 3 + 1] = v.y;
+            positions[i * 3 + 2] = v.z;
+          });
+          const indices: number[] = [];
+          polyhedron.faces.forEach(f => indices.push(...f.vertices));
+
+          const geometry = new BufferGeometry();
+          geometry.setAttribute('position', new BufferAttribute(positions, 3));
+          geometry.setIndex(indices);
+          geometry.computeVertexNormals();
           geometry.computeBoundingSphere();
           geometry.computeBoundsTree();
           const sphere = geometry.boundingSphere!;
@@ -141,12 +156,12 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
         })
         .catch(err => {
           if ((err as Error).name !== 'AbortError') {
-            console.error('ThreeViewer: STL load error', err);
+            console.error('ThreeViewer: mesh load error', err);
           }
         });
 
       return () => abort.abort();
-    }, [stlUrl, active]);
+    }, [meshDataUrl, active]);
 
     useImperativeHandle(
       ref,

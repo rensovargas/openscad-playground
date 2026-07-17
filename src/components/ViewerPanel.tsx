@@ -313,7 +313,7 @@ export default function ViewerPanel({className, style}: {className?: string, sty
       }}>
         <ThreeViewer
           ref={threeViewerRef}
-          stlUrl={state.output?.outFileURL ?? null}
+          meshDataUrl={state.output?.outFileURL ?? null}
           active={viewerEngine === 'three'}
         />
       </div>
