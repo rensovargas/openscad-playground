@@ -18,10 +18,11 @@ export interface ThreeViewerHandle {
 
 interface ThreeViewerProps {
   stlUrl: string | null;
+  active: boolean;
 }
 
 const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
-  ({ stlUrl }, ref) => {
+  ({ stlUrl, active }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<WebGLRenderer | null>(null);
     const cameraRef = useRef<PerspectiveCamera | null>(null);
@@ -102,6 +103,7 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
     // Reload geometry when stlUrl changes
     useEffect(() => {
       if (!stlUrl) return;
+      if (!active) return;
       const abort = new AbortController();
 
       fetch(stlUrl, { signal: abort.signal })
@@ -111,6 +113,7 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
 
           const geometry = new STLLoader().parse(buffer);
           geometry.computeBoundingSphere();
+          geometry.computeBoundsTree();
           const sphere = geometry.boundingSphere!;
 
           const scene = sceneRef.current!;
@@ -119,6 +122,7 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
 
           if (meshRef.current) {
             scene.remove(meshRef.current);
+            meshRef.current.geometry.disposeBoundsTree();
             meshRef.current.geometry.dispose();
           }
 
@@ -142,7 +146,7 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
         });
 
       return () => abort.abort();
-    }, [stlUrl]);
+    }, [stlUrl, active]);
 
     useImperativeHandle(
       ref,

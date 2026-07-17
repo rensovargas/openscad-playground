@@ -20,6 +20,8 @@ import "primereact/resources/primereact.min.css";
 import "primeicons/primeicons.css";
 import "primeflex/primeflex.min.css";
 
+import './viewer/setup-bvh.ts';
+
 const log = debug('app:log');
 
 if (process.env.NODE_ENV !== 'production') {

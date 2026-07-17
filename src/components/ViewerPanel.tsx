@@ -311,7 +311,11 @@ export default function ViewerPanel({className, style}: {className?: string, sty
         display: viewerEngine === 'three' ? 'block' : 'none',
         position: 'absolute', top: 0, left: 0, width: '100%', height: '100%',
       }}>
-        <ThreeViewer ref={threeViewerRef} stlUrl={state.output?.outFileURL ?? null} />
+        <ThreeViewer
+          ref={threeViewerRef}
+          stlUrl={state.output?.outFileURL ?? null}
+          active={viewerEngine === 'three'}
+        />
       </div>
 
     </div>
