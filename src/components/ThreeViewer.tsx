@@ -1,19 +1,28 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import {
   AmbientLight,
+  AlwaysStencilFunc,
+  BackSide,
   BufferAttribute,
   BufferGeometry,
+  DecrementWrapStencilOp,
   DirectionalLight,
+  DoubleSide,
+  FrontSide,
+  IncrementWrapStencilOp,
   Line,
   LineBasicMaterial,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  NotEqualStencilFunc,
   Object3D,
   PerspectiveCamera,
   Plane,
+  PlaneGeometry,
   Quaternion,
   Raycaster,
+  ReplaceStencilOp,
   Scene,
   SphereGeometry,
   Vector2,
@@ -76,6 +85,12 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
     const transformControlsRef = useRef<TransformControls | null>(null);
     const sectionPlaneRef = useRef<Plane | null>(null);
     const updatePlaneFromGizmoRef = useRef<() => void>(() => {});
+    const stencilBackMeshRef = useRef<Mesh | null>(null);
+    const stencilFrontMeshRef = useRef<Mesh | null>(null);
+    const capMeshRef = useRef<Mesh | null>(null);
+    const rebuildSectionCapRef = useRef<() => void>(() => {});
+    const disposeSectionCapRef = useRef<() => void>(() => {});
+    const positionCapMeshRef = useRef<() => void>(() => {});
 
     // Clear measurement markers whenever measureEnabled toggles off
     useEffect(() => {
@@ -219,9 +234,101 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
           normal: [normal.x, normal.y, normal.z],
           offset: sectionOffsetRef.current,
         });
+        positionCapMeshRef.current();
       }
       updatePlaneFromGizmoRef.current = updatePlaneFromGizmo;
       transformControls.addEventListener('change', updatePlaneFromGizmo);
+
+      function disposeSectionCap() {
+        // (defined before rebuildSectionCap since rebuildSectionCap calls it)
+        if (stencilBackMeshRef.current) {
+          scene.remove(stencilBackMeshRef.current);
+          (stencilBackMeshRef.current.material as MeshBasicMaterial).dispose();
+          stencilBackMeshRef.current = null;
+        }
+        if (stencilFrontMeshRef.current) {
+          scene.remove(stencilFrontMeshRef.current);
+          (stencilFrontMeshRef.current.material as MeshBasicMaterial).dispose();
+          stencilFrontMeshRef.current = null;
+        }
+        if (capMeshRef.current) {
+          scene.remove(capMeshRef.current);
+          capMeshRef.current.geometry.dispose();
+          (capMeshRef.current.material as MeshBasicMaterial).dispose();
+          capMeshRef.current = null;
+        }
+      }
+      disposeSectionCapRef.current = disposeSectionCap;
+
+      function rebuildSectionCap() {
+        disposeSectionCap();
+        if (!sectionEnabledRef.current || !meshRef.current) return;
+
+        const geometry = meshRef.current.geometry;
+        const sphere = geometry.boundingSphere!;
+
+        const backMat = new MeshBasicMaterial({
+          colorWrite: false,
+          depthWrite: false,
+          stencilWrite: true,
+          side: BackSide,
+          stencilFunc: AlwaysStencilFunc,
+          stencilFail: IncrementWrapStencilOp,
+          stencilZFail: IncrementWrapStencilOp,
+          stencilZPass: IncrementWrapStencilOp,
+        });
+        const backMesh = new Mesh(geometry, backMat);
+        backMesh.renderOrder = 1;
+        scene.add(backMesh);
+        stencilBackMeshRef.current = backMesh;
+
+        const frontMat = new MeshBasicMaterial({
+          colorWrite: false,
+          depthWrite: false,
+          stencilWrite: true,
+          side: FrontSide,
+          stencilFunc: AlwaysStencilFunc,
+          stencilFail: DecrementWrapStencilOp,
+          stencilZFail: DecrementWrapStencilOp,
+          stencilZPass: DecrementWrapStencilOp,
+        });
+        const frontMesh = new Mesh(geometry, frontMat);
+        frontMesh.renderOrder = 2;
+        scene.add(frontMesh);
+        stencilFrontMeshRef.current = frontMesh;
+
+        const capSize = sphere.radius * 2.5;
+        const capMat = new MeshBasicMaterial({
+          color: materialRef.current!.color,
+          side: DoubleSide,
+          depthTest: false,
+          stencilWrite: true,
+          stencilRef: 0,
+          stencilFunc: NotEqualStencilFunc,
+          stencilFail: ReplaceStencilOp,
+          stencilZFail: ReplaceStencilOp,
+          stencilZPass: ReplaceStencilOp,
+        });
+        const capMesh = new Mesh(new PlaneGeometry(capSize, capSize), capMat);
+        capMesh.renderOrder = 3;
+        capMesh.onAfterRender = (r) => r.clearStencil();
+        scene.add(capMesh);
+        capMeshRef.current = capMesh;
+
+        positionCapMeshRef.current();
+      }
+      rebuildSectionCapRef.current = rebuildSectionCap;
+
+      function positionCapMesh() {
+        const plane = sectionPlaneRef.current;
+        const capMesh = capMeshRef.current;
+        if (!plane || !capMesh) return;
+        const normal = plane.normal;
+        const origin = normal.clone().multiplyScalar(-plane.constant);
+        capMesh.position.copy(origin);
+        capMesh.quaternion.setFromUnitVectors(new Vector3(0, 0, 1), normal);
+      }
+      positionCapMeshRef.current = positionCapMesh;
 
       const material = new MeshStandardMaterial({
         color: 0xf5a623,
@@ -278,11 +385,13 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
         scene.add(transformControls.getHelper());
         transformControls.attach(helper);
         updatePlaneFromGizmoRef.current();
+        rebuildSectionCapRef.current();
       } else {
         transformControls.detach();
         scene.remove(transformControls.getHelper());
         scene.remove(helper);
         materialRef.current!.clippingPlanes = [];
+        disposeSectionCapRef.current();
       }
     }, [sectionEnabled]);
 
@@ -334,6 +443,10 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
           const mesh = new Mesh(geometry, materialRef.current!);
           scene.add(mesh);
           meshRef.current = mesh;
+
+          if (sectionEnabledRef.current) {
+            rebuildSectionCapRef.current();
+          }
 
           controls.target.copy(sphere.center);
           camera.position
