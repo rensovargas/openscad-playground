@@ -16,18 +16,39 @@
 - Dev server: `npm run start:development` (port 4000, matches `tests/e2e.test.js`'s `baseUrl`).
 - Raw model units throughout (no unit conversion) — matches OpenSCAD's own unitless/mm-by-convention coordinates.
 
+## Pre-existing bug fixed alongside Task 1
+
+Baseline `npm run test:e2e` on `main` (before this plan's changes) fails 3 of 7 tests with a console
+error `"ThreeViewer: STL load error"`. Root cause: `ViewerPanel` always mounts `ThreeViewer` (only
+CSS-hides it via `display: none` when `viewerEngine === 'model-viewer'`), so its STL-fetch effect
+keeps fetching `state.output?.outFileURL` even while hidden. `src/state/model.ts` (around line 417-432)
+revokes the *previous* `outFileURL` blob synchronously as soon as a new render completes; when two
+renders land close together (a preview render immediately followed by a final render — the common
+case for fast-compiling models), the hidden `ThreeViewer`'s in-flight `fetch()` of the first blob URL
+can lose the race against that revocation, producing a generic fetch failure (not an `AbortError`, so
+the existing `if ((err as Error).name !== 'AbortError')` guard doesn't suppress it).
+
+Task 1 fixes this by adding an `active` prop that gates the entire STL-fetch/parse/BVH-compute effect —
+which also avoids wasting BVH computation on a hidden viewer, directly useful for Task 1's own work.
+This does not address the (separate, out-of-scope) theoretical version of the same race if two renders
+land close together *while* the Three engine is actively displayed — only the always-mounted-while-hidden
+case, which is what the failing tests exercise.
+
 ---
 
-### Task 1: BVH setup and bounds-tree wiring
+### Task 1: BVH setup, bounds-tree wiring, and hidden-viewer STL-fetch fix
 
 **Files:**
 - Modify: `package.json` (add `three-mesh-bvh` dependency)
 - Create: `src/viewer/setup-bvh.ts`
 - Modify: `src/index.tsx:1-11` (add side-effect import)
-- Modify: `src/components/ThreeViewer.tsx:102-145` (compute/dispose bounds tree in the STL-load effect)
+- Modify: `src/components/ThreeViewer.tsx:19-22,102-145` (add `active` prop, gate the STL-load effect on it, compute/dispose bounds tree)
+- Modify: `src/components/ViewerPanel.tsx:314` (pass `active={viewerEngine === 'three'}` to `ThreeViewer`)
 
 **Interfaces:**
-- Produces: importing `../viewer/setup-bvh.ts` anywhere guarantees `THREE.Mesh.prototype.raycast`, `THREE.BufferGeometry.prototype.computeBoundsTree`, and `THREE.BufferGeometry.prototype.disposeBoundsTree` are patched globally. No other task needs to re-patch.
+- Produces:
+  - Importing `../viewer/setup-bvh.ts` anywhere guarantees `THREE.Mesh.prototype.raycast`, `THREE.BufferGeometry.prototype.computeBoundsTree`, and `THREE.BufferGeometry.prototype.disposeBoundsTree` are patched globally. No other task needs to re-patch.
+  - `ThreeViewer` prop `active: boolean` (true only when `viewerEngine === 'three'`). Tasks 2-4 don't need to read or pass this themselves — their own toolbar toggles are already only rendered when `viewerEngine === 'three'`, so `measureEnabled`/`sectionEnabled` are never true while `active` is false — but they must preserve this prop when they extend `ThreeViewerProps` in later tasks.
 
 - [ ] **Step 1: Install `three-mesh-bvh`**
 
@@ -62,18 +83,44 @@ BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 In `src/index.tsx`, add near the other early imports (after the existing imports, before `const log = debug('app:log');`):
 
 ```ts
-import '../src/viewer/setup-bvh.ts';
-```
-
-Actually use a relative path consistent with the file's own location — `src/index.tsx` importing a sibling under `src/viewer/`:
-
-```ts
 import './viewer/setup-bvh.ts';
 ```
 
-- [ ] **Step 4: Compute/dispose the bounds tree on STL load**
+- [ ] **Step 4: Add the `active` prop and gate the STL-load effect on it**
 
-In `src/components/ThreeViewer.tsx`, in the STL-load effect (around line 112), after `geometry.computeBoundingSphere();` add:
+In `src/components/ThreeViewer.tsx`, update the props interface (around line 19-22):
+
+```ts
+interface ThreeViewerProps {
+  stlUrl: string | null;
+  active: boolean;
+}
+```
+
+Update the component signature to destructure `active`:
+
+```ts
+const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
+  ({ stlUrl, active }, ref) => {
+```
+
+In the STL-load effect (around line 103-145), add an early return when inactive, right after the existing `if (!stlUrl) return;` line, and add `active` to the dependency array:
+
+```ts
+    useEffect(() => {
+      if (!stlUrl) return;
+      if (!active) return;
+      const abort = new AbortController();
+```
+
+```ts
+      return () => abort.abort();
+    }, [stlUrl, active]);
+```
+
+- [ ] **Step 5: Compute/dispose the bounds tree on STL load**
+
+In the same effect, after `geometry.computeBoundingSphere();` add:
 
 ```ts
           geometry.computeBoundingSphere();
@@ -81,7 +128,7 @@ In `src/components/ThreeViewer.tsx`, in the STL-load effect (around line 112), a
           const sphere = geometry.boundingSphere!;
 ```
 
-And where the previous mesh is removed (around line 120-123), dispose its bounds tree before disposing the geometry:
+And where the previous mesh is removed, dispose its bounds tree before disposing the geometry:
 
 ```ts
           if (meshRef.current) {
@@ -91,18 +138,42 @@ And where the previous mesh is removed (around line 120-123), dispose its bounds
           }
 ```
 
-- [ ] **Step 5: Verify no regressions**
+- [ ] **Step 6: Pass `active` from `ViewerPanel`**
+
+In `src/components/ViewerPanel.tsx`, update the `ThreeViewer` render (around line 314):
+
+```tsx
+        <ThreeViewer
+          ref={threeViewerRef}
+          stlUrl={state.output?.outFileURL ?? null}
+          active={viewerEngine === 'three'}
+        />
+```
+
+- [ ] **Step 7: Verify the fix and no regressions**
 
 Run: `npm run start:development`, open `http://localhost:4000/`.
-- Confirm the default model still loads in the classic (`model-viewer`) engine.
-- Click the "Three.js" toggle button in the viewer toolbar to switch engines.
-- Confirm the STL still renders correctly with no new console errors (check via browser devtools console).
+- Confirm the default model still loads in the classic (`model-viewer`) engine, with no console errors.
+- Click the "Three.js" toggle button in the viewer toolbar to switch engines; confirm the STL still renders correctly with no new console errors.
+- Switch back to the classic engine, then edit the source to trigger a fresh render (e.g. change `cube(10)` to `cube(15)`); confirm no `"ThreeViewer: STL load error"` appears in the console while the Three engine is inactive.
 
-- [ ] **Step 6: Commit**
+Run the e2e baseline suite to confirm the pre-existing failures are gone:
 
 ```bash
-git add package.json package-lock.json src/viewer/setup-bvh.ts src/index.tsx src/components/ThreeViewer.tsx
-git commit -m "feat: add BVH-accelerated raycasting via three-mesh-bvh"
+npm run test:e2e
+```
+
+Expected: `Tests: 7 passed, 7 total` (up from the pre-Task-1 baseline of 4 passed, 3 failed — see "Pre-existing bug fixed alongside Task 1" above). If a port-4000 process is already listening from a previous run, stop it first (`lsof -i :4000` to find the PID, `kill` it) — otherwise the test run hangs on an interactive prompt instead of starting its own dev server.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add package.json package-lock.json src/viewer/setup-bvh.ts src/index.tsx src/components/ThreeViewer.tsx src/components/ViewerPanel.tsx
+git commit -m "feat: add BVH-accelerated raycasting via three-mesh-bvh
+
+Also fixes a pre-existing blob-URL revocation race: ThreeViewer stayed
+mounted (CSS-hidden) even when the classic engine was active, and kept
+fetching STL blobs that model.ts had already revoked."
 ```
 
 ---
@@ -203,6 +274,7 @@ Update the props interface:
 ```ts
 interface ThreeViewerProps {
   stlUrl: string | null;
+  active: boolean;
   measureEnabled: boolean;
   onMeasureChange: (state: MeasureState) => void;
 }
@@ -212,7 +284,7 @@ Update the component signature and add refs (alongside the existing refs, e.g. a
 
 ```ts
 const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
-  ({ stlUrl, measureEnabled, onMeasureChange }, ref) => {
+  ({ stlUrl, active, measureEnabled, onMeasureChange }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<WebGLRenderer | null>(null);
     const cameraRef = useRef<PerspectiveCamera | null>(null);
@@ -437,6 +509,7 @@ Update the `ThreeViewer` render (around line 314) to pass the new props:
         <ThreeViewer
           ref={threeViewerRef}
           stlUrl={state.output?.outFileURL ?? null}
+          active={viewerEngine === 'three'}
           measureEnabled={measureEnabled}
           onMeasureChange={setMeasureState}
         />
@@ -538,6 +611,7 @@ Update the props interface:
 ```ts
 interface ThreeViewerProps {
   stlUrl: string | null;
+  active: boolean;
   measureEnabled: boolean;
   onMeasureChange: (state: MeasureState) => void;
   sectionEnabled: boolean;
@@ -550,7 +624,7 @@ Update the component signature and add refs:
 
 ```ts
 const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
-  ({ stlUrl, measureEnabled, onMeasureChange, sectionEnabled, sectionOffset, onSectionChange }, ref) => {
+  ({ stlUrl, active, measureEnabled, onMeasureChange, sectionEnabled, sectionOffset, onSectionChange }, ref) => {
     // ...existing refs from Task 1/2...
     const sectionEnabledRef = useRef(sectionEnabled);
     useEffect(() => { sectionEnabledRef.current = sectionEnabled; }, [sectionEnabled]);
@@ -799,26 +873,9 @@ Add a "Section" toggle button right after the "Measure" button:
         )}
 ```
 
-Update `ThreeViewer`'s props:
+`ThreeViewer` doesn't currently report the mesh's bounding-sphere radius to the parent, but the sidebar's slider needs it as its min/max range. Add a fourth callback prop, `onBoundingSphereChange: (radius: number) => void`, fired from the STL-load effect in `ThreeViewer` (the effect Task 1 added `active`/BVH handling to) right after `const sphere = geometry.boundingSphere!;`:
 
-```tsx
-        <ThreeViewer
-          ref={threeViewerRef}
-          stlUrl={state.output?.outFileURL ?? null}
-          measureEnabled={measureEnabled}
-          onMeasureChange={setMeasureState}
-          sectionEnabled={sectionEnabled}
-          sectionOffset={sectionState.offset}
-          onSectionChange={(s) => {
-            setSectionState(s);
-            setSectionRadius(r => r); // radius comes from a separate readout, see below
-          }}
-        />
-```
-
-`ThreeViewer` doesn't currently report the mesh's bounding-sphere radius to the parent, but the sidebar's slider needs it as its min/max range. Add a third callback, `onBoundingSphereChange: (radius: number) => void`, fired from the STL-load effect in `ThreeViewer` (Task 1's effect) right after `const sphere = geometry.boundingSphere!;`:
-
-In `ThreeViewer.tsx`, add to the props interface:
+In `ThreeViewer.tsx`, add to the props interface (alongside `onSectionChange` in the block updated above):
 
 ```ts
   onBoundingSphereChange: (radius: number) => void;
@@ -831,14 +888,15 @@ And in the STL-load effect:
           onBoundingSphereChangeRef.current(sphere.radius);
 ```
 
-(add the matching `onBoundingSphereChangeRef` ref + sync effect alongside the other callback refs).
+(add the matching `onBoundingSphereChangeRef` ref + its sync effect alongside the other callback refs from Tasks 1-3.)
 
-Back in `ViewerPanel.tsx`, pass it through and update the sidebar render:
+Back in `ViewerPanel.tsx`, update the `ThreeViewer` render (the block Task 2 added `onMeasureChange` to) to its final form for this task:
 
 ```tsx
         <ThreeViewer
           ref={threeViewerRef}
           stlUrl={state.output?.outFileURL ?? null}
+          active={viewerEngine === 'three'}
           measureEnabled={measureEnabled}
           onMeasureChange={setMeasureState}
           sectionEnabled={sectionEnabled}
