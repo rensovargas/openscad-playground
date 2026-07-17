@@ -4,27 +4,37 @@ import {
   BufferAttribute,
   BufferGeometry,
   DirectionalLight,
+  Line,
+  LineBasicMaterial,
   Mesh,
+  MeshBasicMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
+  Raycaster,
   Scene,
+  SphereGeometry,
+  Vector2,
   Vector3,
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { parseOff } from '../io/import_off';
+import { MeasureState, EMPTY_MEASURE_STATE } from '../viewer/section-measure-types';
 
 export interface ThreeViewerHandle {
   setCameraView(theta: number, phi: number): void;
+  clearMeasurement(): void;
 }
 
 interface ThreeViewerProps {
   meshDataUrl: string | null;
   active: boolean;
+  measureEnabled: boolean;
+  onMeasureChange: (state: MeasureState) => void;
 }
 
 const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
-  ({ meshDataUrl, active }, ref) => {
+  ({ meshDataUrl, active, measureEnabled, onMeasureChange }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<WebGLRenderer | null>(null);
     const cameraRef = useRef<PerspectiveCamera | null>(null);
@@ -33,6 +43,29 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
     const meshRef = useRef<Mesh | null>(null);
     const materialRef = useRef<MeshStandardMaterial | null>(null);
     const animFrameRef = useRef<number>(0);
+
+    const measureEnabledRef = useRef(measureEnabled);
+    useEffect(() => { measureEnabledRef.current = measureEnabled; }, [measureEnabled]);
+    const onMeasureChangeRef = useRef(onMeasureChange);
+    useEffect(() => { onMeasureChangeRef.current = onMeasureChange; }, [onMeasureChange]);
+
+    const measureStateRef = useRef<MeasureState>(EMPTY_MEASURE_STATE);
+    const markerARef = useRef<Mesh | null>(null);
+    const markerBRef = useRef<Mesh | null>(null);
+    const measureLineRef = useRef<Line | null>(null);
+
+    // Clear measurement markers whenever measureEnabled toggles off
+    useEffect(() => {
+      if (measureEnabled) return;
+      const scene = sceneRef.current;
+      if (scene) {
+        if (markerARef.current) { scene.remove(markerARef.current); markerARef.current = null; }
+        if (markerBRef.current) { scene.remove(markerBRef.current); markerBRef.current = null; }
+        if (measureLineRef.current) { scene.remove(measureLineRef.current); measureLineRef.current = null; }
+      }
+      measureStateRef.current = EMPTY_MEASURE_STATE;
+      onMeasureChangeRef.current(EMPTY_MEASURE_STATE);
+    }, [measureEnabled]);
 
     // Mount once: set up Three.js scene
     useEffect(() => {
@@ -65,6 +98,80 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
       controls.dampingFactor = 0.05;
       controlsRef.current = controls;
 
+      const raycaster = new Raycaster();
+      const markerGeometry = new SphereGeometry(1, 12, 8); // scaled per-marker below
+      let pointerDownPos: { x: number; y: number } | null = null;
+
+      function placeMarker(color: number, point: Vector3): Mesh {
+        const radius = (meshRef.current?.geometry.boundingSphere?.radius ?? 1) * 0.02;
+        const marker = new Mesh(markerGeometry, new MeshBasicMaterial({ color }));
+        marker.scale.setScalar(radius);
+        marker.position.copy(point);
+        scene.add(marker);
+        return marker;
+      }
+
+      function handleMeasureClick(clientX: number, clientY: number) {
+        if (!measureEnabledRef.current || !meshRef.current) return;
+
+        const rect = renderer.domElement.getBoundingClientRect();
+        const ndc = new Vector2(
+          ((clientX - rect.left) / rect.width) * 2 - 1,
+          -((clientY - rect.top) / rect.height) * 2 + 1,
+        );
+        raycaster.setFromCamera(ndc, camera);
+        const hits = raycaster.intersectObject(meshRef.current, false);
+        if (hits.length === 0) return;
+        const point = hits[0].point.clone();
+
+        const current = measureStateRef.current;
+        if (current.pointA === null) {
+          if (markerARef.current) { scene.remove(markerARef.current); markerARef.current = null; }
+          if (markerBRef.current) { scene.remove(markerBRef.current); markerBRef.current = null; }
+          if (measureLineRef.current) { scene.remove(measureLineRef.current); measureLineRef.current = null; }
+
+          markerARef.current = placeMarker(0x00ffff, point);
+          const next: MeasureState = { pointA: point.toArray() as [number, number, number], pointB: null, distance: null };
+          measureStateRef.current = next;
+          onMeasureChangeRef.current(next);
+        } else if (current.pointB === null) {
+          markerBRef.current = placeMarker(0xff00ff, point);
+          const a = new Vector3(...current.pointA);
+          const distance = a.distanceTo(point);
+          const lineGeometry = new BufferGeometry().setFromPoints([a, point]);
+          const line = new Line(lineGeometry, new LineBasicMaterial({ color: 0xffffff }));
+          scene.add(line);
+          measureLineRef.current = line;
+
+          const next: MeasureState = { pointA: current.pointA, pointB: point.toArray() as [number, number, number], distance };
+          measureStateRef.current = next;
+          onMeasureChangeRef.current(next);
+        } else {
+          if (markerARef.current) { scene.remove(markerARef.current); markerARef.current = null; }
+          if (markerBRef.current) { scene.remove(markerBRef.current); markerBRef.current = null; }
+          if (measureLineRef.current) { scene.remove(measureLineRef.current); measureLineRef.current = null; }
+
+          markerARef.current = placeMarker(0x00ffff, point);
+          const next: MeasureState = { pointA: point.toArray() as [number, number, number], pointB: null, distance: null };
+          measureStateRef.current = next;
+          onMeasureChangeRef.current(next);
+        }
+      }
+
+      function onCanvasPointerDown(e: PointerEvent) {
+        pointerDownPos = { x: e.clientX, y: e.clientY };
+      }
+      function onCanvasPointerUp(e: PointerEvent) {
+        if (!pointerDownPos) return;
+        const dx = e.clientX - pointerDownPos.x;
+        const dy = e.clientY - pointerDownPos.y;
+        pointerDownPos = null;
+        if (Math.hypot(dx, dy) > 5) return; // drag, not a click
+        handleMeasureClick(e.clientX, e.clientY);
+      }
+      renderer.domElement.addEventListener('pointerdown', onCanvasPointerDown);
+      renderer.domElement.addEventListener('pointerup', onCanvasPointerUp);
+
       const material = new MeshStandardMaterial({
         color: 0xf5a623,
         flatShading: true,
@@ -93,6 +200,8 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
       return () => {
         cancelAnimationFrame(animFrameRef.current);
         ro.disconnect();
+        renderer.domElement.removeEventListener('pointerdown', onCanvasPointerDown);
+        renderer.domElement.removeEventListener('pointerup', onCanvasPointerUp);
         controls.dispose();
         material.dispose();
         renderer.dispose();
@@ -179,6 +288,16 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
             .addScaledVector(dir, sphere.radius * 2.5);
           controlsRef.current!.target.copy(sphere.center);
           controlsRef.current!.update();
+        },
+        clearMeasurement() {
+          const scene = sceneRef.current;
+          if (scene) {
+            if (markerARef.current) { scene.remove(markerARef.current); markerARef.current = null; }
+            if (markerBRef.current) { scene.remove(markerBRef.current); markerBRef.current = null; }
+            if (measureLineRef.current) { scene.remove(measureLineRef.current); measureLineRef.current = null; }
+          }
+          measureStateRef.current = EMPTY_MEASURE_STATE;
+          onMeasureChangeRef.current(EMPTY_MEASURE_STATE);
         },
       }),
       [],

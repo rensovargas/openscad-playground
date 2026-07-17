@@ -6,6 +6,8 @@ import { Toast } from 'primereact/toast';
 import { blurHashToImage, imageToBlurhash, imageToThumbhash, thumbHashToImage } from '../io/image_hashes.ts';
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import ThreeViewer, { ThreeViewerHandle } from './ThreeViewer';
+import MeasureSectionSidebar from './MeasureSectionSidebar';
+import { MeasureState, EMPTY_MEASURE_STATE } from '../viewer/section-measure-types';
 
 declare global {
   namespace JSX {
@@ -63,6 +65,8 @@ export default function ViewerPanel({className, style}: {className?: string, sty
   const toastRef = useRef<Toast>(null);
   const [viewerEngine, setViewerEngine] = useLocalStorage<'model-viewer' | 'three'>('viewer-engine', 'model-viewer');
   const threeViewerRef = useRef<ThreeViewerHandle>(null);
+  const [measureEnabled, setMeasureEnabled] = useState(false);
+  const [measureState, setMeasureState] = useState<MeasureState>(EMPTY_MEASURE_STATE);
 
   const [loadedUri, setLoadedUri] = useState<string | undefined>();
 
@@ -188,12 +192,13 @@ export default function ViewerPanel({className, style}: {className?: string, sty
     <div className={className}
           style={{
               display: 'flex',
-              flexDirection: 'column',
+              flexDirection: 'row',
               position: 'relative',
               flex: 1,
               width: '100%',
               ...(style ?? {})
           }}>
+      <div style={{ display: 'flex', flexDirection: 'column', position: 'relative', flex: 1 }}>
       {/* Toolbar: view preset buttons + engine toggle */}
       <div style={{
         position: 'absolute',
@@ -223,6 +228,21 @@ export default function ViewerPanel({className, style}: {className?: string, sty
         >
           {viewerEngine === 'model-viewer' ? 'Three.js' : 'Classic'}
         </button>
+        {viewerEngine === 'three' && (
+          <button
+            onClick={() => setMeasureEnabled(e => !e)}
+            style={{
+              fontSize: '11px',
+              padding: '2px 8px',
+              cursor: 'pointer',
+              pointerEvents: 'all',
+              fontWeight: measureEnabled ? 'bold' : 'normal',
+            }}
+            title="Toggle measure mode"
+          >
+            Measure
+          </button>
+        )}
       </div>
 
       <Toast ref={toastRef} position='top-right' />
@@ -315,9 +335,20 @@ export default function ViewerPanel({className, style}: {className?: string, sty
           ref={threeViewerRef}
           meshDataUrl={state.output?.outFileURL ?? null}
           active={viewerEngine === 'three'}
+          measureEnabled={measureEnabled}
+          onMeasureChange={setMeasureState}
         />
       </div>
 
+      </div>
+      {viewerEngine === 'three' && (
+        <MeasureSectionSidebar
+          measureEnabled={measureEnabled}
+          measureState={measureState}
+          onClearMeasure={() => threeViewerRef.current?.clearMeasurement()}
+          sectionEnabled={false}
+        />
+      )}
     </div>
   );
 }
