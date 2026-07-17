@@ -9,7 +9,10 @@ import {
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
+  Object3D,
   PerspectiveCamera,
+  Plane,
+  Quaternion,
   Raycaster,
   Scene,
   SphereGeometry,
@@ -18,12 +21,14 @@ import {
   WebGLRenderer,
 } from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { TransformControls } from 'three/examples/jsm/controls/TransformControls.js';
 import { parseOff } from '../io/import_off';
-import { MeasureState, EMPTY_MEASURE_STATE } from '../viewer/section-measure-types';
+import { MeasureState, EMPTY_MEASURE_STATE, SectionState, DEFAULT_SECTION_STATE } from '../viewer/section-measure-types';
 
 export interface ThreeViewerHandle {
   setCameraView(theta: number, phi: number): void;
   clearMeasurement(): void;
+  resetSection(): void;
 }
 
 interface ThreeViewerProps {
@@ -31,10 +36,14 @@ interface ThreeViewerProps {
   active: boolean;
   measureEnabled: boolean;
   onMeasureChange: (state: MeasureState) => void;
+  sectionEnabled: boolean;
+  sectionOffset: number;
+  onSectionChange: (state: SectionState) => void;
+  onBoundingSphereChange: (radius: number) => void;
 }
 
 const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
-  ({ meshDataUrl, active, measureEnabled, onMeasureChange }, ref) => {
+  ({ meshDataUrl, active, measureEnabled, onMeasureChange, sectionEnabled, sectionOffset, onSectionChange, onBoundingSphereChange }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<WebGLRenderer | null>(null);
     const cameraRef = useRef<PerspectiveCamera | null>(null);
@@ -53,6 +62,20 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
     const markerARef = useRef<Mesh | null>(null);
     const markerBRef = useRef<Mesh | null>(null);
     const measureLineRef = useRef<Line | null>(null);
+
+    const sectionEnabledRef = useRef(sectionEnabled);
+    useEffect(() => { sectionEnabledRef.current = sectionEnabled; }, [sectionEnabled]);
+    const sectionOffsetRef = useRef(sectionOffset);
+    useEffect(() => { sectionOffsetRef.current = sectionOffset; }, [sectionOffset]);
+    const onSectionChangeRef = useRef(onSectionChange);
+    useEffect(() => { onSectionChangeRef.current = onSectionChange; }, [onSectionChange]);
+    const onBoundingSphereChangeRef = useRef(onBoundingSphereChange);
+    useEffect(() => { onBoundingSphereChangeRef.current = onBoundingSphereChange; }, [onBoundingSphereChange]);
+
+    const sectionHelperRef = useRef<Object3D | null>(null);
+    const transformControlsRef = useRef<TransformControls | null>(null);
+    const sectionPlaneRef = useRef<Plane | null>(null);
+    const updatePlaneFromGizmoRef = useRef<() => void>(() => {});
 
     // Clear measurement markers whenever measureEnabled toggles off
     useEffect(() => {
@@ -75,10 +98,11 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
       const w = container.clientWidth || 600;
       const h = container.clientHeight || 400;
 
-      const renderer = new WebGLRenderer({ antialias: true });
+      const renderer = new WebGLRenderer({ antialias: true, stencil: true });
       renderer.setPixelRatio(window.devicePixelRatio);
       renderer.setSize(w, h);
       renderer.setClearColor(0x1e1e1e);
+      renderer.localClippingEnabled = true;
       container.appendChild(renderer.domElement);
       rendererRef.current = renderer;
 
@@ -172,6 +196,33 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
       renderer.domElement.addEventListener('pointerdown', onCanvasPointerDown);
       renderer.domElement.addEventListener('pointerup', onCanvasPointerUp);
 
+      const sectionHelper = new Object3D();
+      sectionHelperRef.current = sectionHelper;
+
+      const transformControls = new TransformControls(camera, renderer.domElement);
+      transformControls.setMode('rotate');
+      transformControlsRef.current = transformControls;
+      transformControls.addEventListener('dragging-changed', (event) => {
+        controls.enabled = !(event as any).value;
+      });
+
+      function updatePlaneFromGizmo() {
+        const sphere = meshRef.current?.geometry.boundingSphere;
+        if (!sphere) return;
+        const normal = new Vector3(0, 0, 1).applyQuaternion(sectionHelper.quaternion).normalize();
+        const origin = sphere.center.clone().addScaledVector(normal, sectionOffsetRef.current);
+        const plane = sectionPlaneRef.current ?? new Plane();
+        plane.setFromNormalAndCoplanarPoint(normal, origin);
+        sectionPlaneRef.current = plane;
+        materialRef.current!.clippingPlanes = sectionEnabledRef.current ? [plane] : [];
+        onSectionChangeRef.current({
+          normal: [normal.x, normal.y, normal.z],
+          offset: sectionOffsetRef.current,
+        });
+      }
+      updatePlaneFromGizmoRef.current = updatePlaneFromGizmo;
+      transformControls.addEventListener('change', updatePlaneFromGizmo);
+
       const material = new MeshStandardMaterial({
         color: 0xf5a623,
         flatShading: true,
@@ -202,6 +253,7 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
         ro.disconnect();
         renderer.domElement.removeEventListener('pointerdown', onCanvasPointerDown);
         renderer.domElement.removeEventListener('pointerup', onCanvasPointerUp);
+        transformControls.dispose();
         controls.dispose();
         material.dispose();
         renderer.dispose();
@@ -210,6 +262,34 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
         }
       };
     }, []);
+
+    // Add/remove the section gizmo and attach/detach it when sectionEnabled changes
+    useEffect(() => {
+      const scene = sceneRef.current;
+      const helper = sectionHelperRef.current;
+      const transformControls = transformControlsRef.current;
+      if (!scene || !helper || !transformControls) return;
+
+      if (sectionEnabled) {
+        const sphere = meshRef.current?.geometry.boundingSphere;
+        helper.position.copy(sphere ? sphere.center : new Vector3());
+        helper.quaternion.identity();
+        scene.add(helper);
+        scene.add(transformControls.getHelper());
+        transformControls.attach(helper);
+        updatePlaneFromGizmoRef.current();
+      } else {
+        transformControls.detach();
+        scene.remove(transformControls.getHelper());
+        scene.remove(helper);
+        materialRef.current!.clippingPlanes = [];
+      }
+    }, [sectionEnabled]);
+
+    useEffect(() => {
+      if (!sectionEnabled) return;
+      updatePlaneFromGizmoRef.current();
+    }, [sectionEnabled, sectionOffset]);
 
     // Reload geometry when meshDataUrl changes
     useEffect(() => {
@@ -239,6 +319,7 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
           geometry.computeBoundingSphere();
           geometry.computeBoundsTree();
           const sphere = geometry.boundingSphere!;
+          onBoundingSphereChangeRef.current(sphere.radius);
 
           const scene = sceneRef.current!;
           const camera = cameraRef.current!;
@@ -298,6 +379,12 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
           }
           measureStateRef.current = EMPTY_MEASURE_STATE;
           onMeasureChangeRef.current(EMPTY_MEASURE_STATE);
+        },
+        resetSection() {
+          const helper = sectionHelperRef.current;
+          if (!helper) return;
+          helper.quaternion.identity();
+          updatePlaneFromGizmoRef.current();
         },
       }),
       [],

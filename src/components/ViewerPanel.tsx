@@ -7,7 +7,7 @@ import { blurHashToImage, imageToBlurhash, imageToThumbhash, thumbHashToImage } 
 import { useLocalStorage } from '../hooks/useLocalStorage';
 import ThreeViewer, { ThreeViewerHandle } from './ThreeViewer';
 import MeasureSectionSidebar from './MeasureSectionSidebar';
-import { MeasureState, EMPTY_MEASURE_STATE } from '../viewer/section-measure-types';
+import { MeasureState, EMPTY_MEASURE_STATE, SectionState, DEFAULT_SECTION_STATE } from '../viewer/section-measure-types';
 
 declare global {
   namespace JSX {
@@ -67,6 +67,9 @@ export default function ViewerPanel({className, style}: {className?: string, sty
   const threeViewerRef = useRef<ThreeViewerHandle>(null);
   const [measureEnabled, setMeasureEnabled] = useState(false);
   const [measureState, setMeasureState] = useState<MeasureState>(EMPTY_MEASURE_STATE);
+  const [sectionEnabled, setSectionEnabled] = useState(false);
+  const [sectionState, setSectionState] = useState<SectionState>(DEFAULT_SECTION_STATE);
+  const [sectionRadius, setSectionRadius] = useState(1);
 
   const [loadedUri, setLoadedUri] = useState<string | undefined>();
 
@@ -230,7 +233,13 @@ export default function ViewerPanel({className, style}: {className?: string, sty
         </button>
         {viewerEngine === 'three' && (
           <button
-            onClick={() => setMeasureEnabled(e => !e)}
+            onClick={() => {
+              setMeasureEnabled(e => {
+                const next = !e;
+                if (next) setSectionEnabled(false);
+                return next;
+              });
+            }}
             style={{
               fontSize: '11px',
               padding: '2px 8px',
@@ -241,6 +250,27 @@ export default function ViewerPanel({className, style}: {className?: string, sty
             title="Toggle measure mode"
           >
             Measure
+          </button>
+        )}
+        {viewerEngine === 'three' && (
+          <button
+            onClick={() => {
+              setSectionEnabled(e => {
+                const next = !e;
+                if (next) setMeasureEnabled(false);
+                return next;
+              });
+            }}
+            style={{
+              fontSize: '11px',
+              padding: '2px 8px',
+              cursor: 'pointer',
+              pointerEvents: 'all',
+              fontWeight: sectionEnabled ? 'bold' : 'normal',
+            }}
+            title="Toggle cross-section mode"
+          >
+            Section
           </button>
         )}
       </div>
@@ -337,6 +367,10 @@ export default function ViewerPanel({className, style}: {className?: string, sty
           active={viewerEngine === 'three'}
           measureEnabled={measureEnabled}
           onMeasureChange={setMeasureState}
+          sectionEnabled={sectionEnabled}
+          sectionOffset={sectionState.offset}
+          onSectionChange={setSectionState}
+          onBoundingSphereChange={setSectionRadius}
         />
       </div>
 
@@ -346,7 +380,14 @@ export default function ViewerPanel({className, style}: {className?: string, sty
           measureEnabled={measureEnabled}
           measureState={measureState}
           onClearMeasure={() => threeViewerRef.current?.clearMeasurement()}
-          sectionEnabled={false}
+          sectionEnabled={sectionEnabled}
+          sectionState={sectionState}
+          sectionRadius={sectionRadius}
+          onSectionOffsetChange={(offset) => setSectionState(s => ({ ...s, offset }))}
+          onResetSection={() => {
+            threeViewerRef.current?.resetSection();
+            setSectionState(DEFAULT_SECTION_STATE);
+          }}
         />
       )}
     </div>
