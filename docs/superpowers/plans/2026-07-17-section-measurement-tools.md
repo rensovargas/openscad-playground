@@ -178,7 +178,192 @@ fetching STL blobs that model.ts had already revoked."
 
 ---
 
-### Task 2: Click-to-measure distance
+## Pre-existing bug fixed by Task 2
+
+Task 1's implementer discovered, while manually verifying, that `state.output.outFileURL` (what
+`ThreeViewer` fetches) is raw **OFF**-format data, not STL: `src/state/model.ts:381` hard-codes
+`renderFormat: this.state.is2D ? 'svg' : 'off'` for the normal render path, and that `output.outFile`
+(OFF bytes) is what `outFileURL` wraps in a blob URL. `ThreeViewer` has always fed those OFF bytes to
+`STLLoader.parse()`, which throws (the byte layout doesn't match binary STL's header format) — caught
+and logged as `"ThreeViewer: STL load error"`, with no mesh ever added to the scene. This predates this
+plan entirely and was never caught by `tests/e2e.test.js` because no test switches to the Three.js
+engine (the classic `model-viewer` engine takes a different, correct path: OFF → `parseOff()` →
+`exportGlb()` → GLB, for its own `displayFileURL`).
+
+This blocks every remaining task in this plan (nothing to raycast against, measure, or clip), so it's
+fixed now, before Task 3 (originally numbered Task 2 — this insertion renumbers the rest of the plan).
+The fix reuses the existing `parseOff()` utility (`src/io/import_off.ts`) instead of adding a GLTFLoader
+scene-graph traversal, so every later task's assumption of a single flat `Mesh`/`BufferGeometry` in
+`meshRef` still holds. It also renames the `stlUrl` prop to `meshDataUrl` throughout, since it no longer
+carries STL data — Tasks 3-5 below already use the new name.
+
+---
+
+### Task 2: Parse OFF directly into a BufferGeometry (fixes the OFF/STL mismatch)
+
+**Files:**
+- Modify: `src/components/ThreeViewer.tsx` (replace `STLLoader` with `parseOff`-based geometry construction; rename `stlUrl` prop to `meshDataUrl`)
+- Modify: `src/components/ViewerPanel.tsx:316` (rename the prop passed to `ThreeViewer`)
+
+**Interfaces:**
+- Consumes: `parseOff(content: string): IndexedPolyhedron` from `src/io/import_off.ts`, where (from `src/io/common.ts`) `IndexedPolyhedron = { vertices: Vertex[]; faces: Face[]; colors: Color[] }`, `Vertex = { x: number; y: number; z: number }`, `Face = { vertices: [number, number, number]; colorIndex: number }` — `parseOff` already triangulates every face, so each `Face.vertices` triple is directly usable as a geometry index triple.
+- Produces: `ThreeViewer` prop renamed `meshDataUrl: string | null` (was `stlUrl`) — Tasks 3-5 below already use this name; no further renames needed after this task.
+
+- [ ] **Step 1: Replace the STLLoader import with `parseOff` and BufferGeometry pieces**
+
+In `src/components/ThreeViewer.tsx`, replace the current import block:
+
+```ts
+import { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
+import {
+  AmbientLight,
+  BufferAttribute,
+  BufferGeometry,
+  DirectionalLight,
+  Mesh,
+  MeshStandardMaterial,
+  PerspectiveCamera,
+  Scene,
+  Vector3,
+  WebGLRenderer,
+} from 'three';
+import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
+import { parseOff } from '../io/import_off';
+```
+
+(This removes the `STLLoader` import entirely — it's no longer used.)
+
+- [ ] **Step 2: Rename the `stlUrl` prop to `meshDataUrl`**
+
+Update the props interface:
+
+```ts
+interface ThreeViewerProps {
+  meshDataUrl: string | null;
+  active: boolean;
+}
+```
+
+Update the component signature:
+
+```ts
+const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
+  ({ meshDataUrl, active }, ref) => {
+```
+
+- [ ] **Step 3: Replace the STL parse with OFF parsing + manual BufferGeometry construction**
+
+Replace the geometry-loading effect (currently reading `stlUrl`, fetching an `arrayBuffer`, and calling
+`new STLLoader().parse(buffer)`) with:
+
+```ts
+    // Reload geometry when meshDataUrl changes
+    useEffect(() => {
+      if (!meshDataUrl) return;
+      if (!active) return;
+      const abort = new AbortController();
+
+      fetch(meshDataUrl, { signal: abort.signal })
+        .then(r => r.text())
+        .then(text => {
+          if (abort.signal.aborted) return;
+
+          const polyhedron = parseOff(text);
+          const positions = new Float32Array(polyhedron.vertices.length * 3);
+          polyhedron.vertices.forEach((v, i) => {
+            positions[i * 3] = v.x;
+            positions[i * 3 + 1] = v.y;
+            positions[i * 3 + 2] = v.z;
+          });
+          const indices: number[] = [];
+          polyhedron.faces.forEach(f => indices.push(...f.vertices));
+
+          const geometry = new BufferGeometry();
+          geometry.setAttribute('position', new BufferAttribute(positions, 3));
+          geometry.setIndex(indices);
+          geometry.computeVertexNormals();
+          geometry.computeBoundingSphere();
+          geometry.computeBoundsTree();
+          const sphere = geometry.boundingSphere!;
+
+          const scene = sceneRef.current!;
+          const camera = cameraRef.current!;
+          const controls = controlsRef.current!;
+
+          if (meshRef.current) {
+            scene.remove(meshRef.current);
+            meshRef.current.geometry.disposeBoundsTree();
+            meshRef.current.geometry.dispose();
+          }
+
+          const mesh = new Mesh(geometry, materialRef.current!);
+          scene.add(mesh);
+          meshRef.current = mesh;
+
+          controls.target.copy(sphere.center);
+          camera.position
+            .copy(sphere.center)
+            .addScaledVector(new Vector3(0, 0, 1), sphere.radius * 2.5);
+          camera.near = sphere.radius * 0.01;
+          camera.far = sphere.radius * 100;
+          camera.updateProjectionMatrix();
+          controls.update();
+        })
+        .catch(err => {
+          if ((err as Error).name !== 'AbortError') {
+            console.error('ThreeViewer: mesh load error', err);
+          }
+        });
+
+      return () => abort.abort();
+    }, [meshDataUrl, active]);
+```
+
+- [ ] **Step 4: Rename the prop in `ViewerPanel`**
+
+In `src/components/ViewerPanel.tsx`, update the `ThreeViewer` render (line 316):
+
+```tsx
+        <ThreeViewer
+          ref={threeViewerRef}
+          meshDataUrl={state.output?.outFileURL ?? null}
+          active={viewerEngine === 'three'}
+        />
+```
+
+- [ ] **Step 5: Manual verification**
+
+Run: `npm run start:development`, open `http://localhost:4000/#src=cube(%5B20%2C20%2C20%5D)%3B`.
+- Switch to the Three.js engine.
+- Confirm an actual orange cube mesh renders (not an empty scene) — this is the regression test for the bug this task fixes.
+- Orbit around it with the mouse; confirm the camera framing (near/far/target) still looks correct.
+- Change the source to `sphere(15);` and re-render; confirm the mesh updates to a sphere with no console errors.
+- No `"ThreeViewer: mesh load error"` (or any other new console error) in either engine.
+
+Run the e2e suite once more as a regression check:
+
+```bash
+npm run test:e2e
+```
+
+Expected: same pass/fail shape as Task 1 left it (the three original blob-URL-race tests still pass; none of these tests exercise the Three engine directly, so this task shouldn't change the e2e results either way — its correctness is verified by the manual check above).
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add src/components/ThreeViewer.tsx src/components/ViewerPanel.tsx
+git commit -m "fix: parse OFF render output directly into BufferGeometry
+
+ThreeViewer was feeding OFF-format bytes (state.output.outFileURL) to
+STLLoader.parse(), which always threw — the Three.js viewer has never
+actually rendered a mesh. Reuse the existing parseOff() utility and
+build the BufferGeometry directly instead. Renames the stlUrl prop to
+meshDataUrl since it no longer carries STL data."
+```
+
+---
+
+### Task 3: Click-to-measure distance
 
 **Files:**
 - Create: `src/viewer/section-measure-types.ts`
@@ -189,9 +374,9 @@ fetching STL blobs that model.ts had already revoked."
 **Interfaces:**
 - Consumes: `geometry.computeBoundsTree()`/`disposeBoundsTree()` and the patched `Mesh.prototype.raycast` from Task 1 (used transparently by `Raycaster.intersectObject`).
 - Produces:
-  - `MeasureState` type (from `section-measure-types.ts`), consumed by Task 3/4 unchanged.
+  - `MeasureState` type (from `section-measure-types.ts`), consumed by Task 4/5 unchanged.
   - `ThreeViewer` props `measureEnabled: boolean`, `onMeasureChange: (state: MeasureState) => void`.
-  - `MeasureSectionSidebar` component with props `measureEnabled: boolean`, `measureState: MeasureState`, `onClearMeasure: () => void`, `sectionEnabled: boolean` (unused by this component until Task 3, but included now so `ViewerPanel` doesn't need to touch this file's prop signature twice — Task 3 adds the section-specific props alongside it).
+  - `MeasureSectionSidebar` component with props `measureEnabled: boolean`, `measureState: MeasureState`, `onClearMeasure: () => void`, `sectionEnabled: boolean` (unused by this component until Task 4, but included now so `ViewerPanel` doesn't need to touch this file's prop signature twice — Task 4 adds the section-specific props alongside it).
 
 - [ ] **Step 1: Create the shared types module**
 
@@ -273,7 +458,7 @@ Update the props interface:
 
 ```ts
 interface ThreeViewerProps {
-  stlUrl: string | null;
+  meshDataUrl: string | null;
   active: boolean;
   measureEnabled: boolean;
   onMeasureChange: (state: MeasureState) => void;
@@ -284,7 +469,7 @@ Update the component signature and add refs (alongside the existing refs, e.g. a
 
 ```ts
 const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
-  ({ stlUrl, active, measureEnabled, onMeasureChange }, ref) => {
+  ({ meshDataUrl, active, measureEnabled, onMeasureChange }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const rendererRef = useRef<WebGLRenderer | null>(null);
     const cameraRef = useRef<PerspectiveCamera | null>(null);
@@ -508,7 +693,7 @@ Update the `ThreeViewer` render (around line 314) to pass the new props:
 ```tsx
         <ThreeViewer
           ref={threeViewerRef}
-          stlUrl={state.output?.outFileURL ?? null}
+          meshDataUrl={state.output?.outFileURL ?? null}
           active={viewerEngine === 'three'}
           measureEnabled={measureEnabled}
           onMeasureChange={setMeasureState}
@@ -563,7 +748,7 @@ git commit -m "feat: add click-to-measure distance tool to Three.js viewer"
 
 ---
 
-### Task 3: Cross-section clipping plane (gizmo + slider, no cap yet)
+### Task 4: Cross-section clipping plane (gizmo + slider, no cap yet)
 
 **Files:**
 - Modify: `src/components/ThreeViewer.tsx` (section props, `TransformControls`, plane derivation, mesh clipping)
@@ -571,11 +756,11 @@ git commit -m "feat: add click-to-measure distance tool to Three.js viewer"
 - Modify: `src/components/ViewerPanel.tsx` (section toggle state, mutual exclusion, wiring)
 
 **Interfaces:**
-- Consumes: `SectionState`/`DEFAULT_SECTION_STATE` from `section-measure-types.ts` (Task 2).
+- Consumes: `SectionState`/`DEFAULT_SECTION_STATE` from `section-measure-types.ts` (Task 3).
 - Produces:
   - `ThreeViewer` props `sectionEnabled: boolean`, `sectionOffset: number`, `onSectionChange: (state: SectionState) => void`.
   - `MeasureSectionSidebar` props `sectionEnabled: boolean`, `sectionState: SectionState`, `onSectionOffsetChange: (offset: number) => void`, `onResetSection: () => void`.
-  - The mesh's shared `MeshStandardMaterial` (`materialRef.current`) gets a `clippingPlanes` array that Task 4's stencil-cap objects read the same `Plane` instance from — Task 4 must reuse the exact `Plane` object created here (stored in a ref: `sectionPlaneRef.current: Plane | null`), not recompute it independently.
+  - The mesh's shared `MeshStandardMaterial` (`materialRef.current`) gets a `clippingPlanes` array that Task 5's stencil-cap objects read the same `Plane` instance from — Task 5 must reuse the exact `Plane` object created here (stored in a ref: `sectionPlaneRef.current: Plane | null`), not recompute it independently.
 
 - [ ] **Step 1: Add section props, gizmo, and plane derivation to `ThreeViewer`**
 
@@ -610,7 +795,7 @@ Update the props interface:
 
 ```ts
 interface ThreeViewerProps {
-  stlUrl: string | null;
+  meshDataUrl: string | null;
   active: boolean;
   measureEnabled: boolean;
   onMeasureChange: (state: MeasureState) => void;
@@ -624,8 +809,8 @@ Update the component signature and add refs:
 
 ```ts
 const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
-  ({ stlUrl, active, measureEnabled, onMeasureChange, sectionEnabled, sectionOffset, onSectionChange }, ref) => {
-    // ...existing refs from Task 1/2...
+  ({ meshDataUrl, active, measureEnabled, onMeasureChange, sectionEnabled, sectionOffset, onSectionChange }, ref) => {
+    // ...existing refs from Tasks 1-3...
     const sectionEnabledRef = useRef(sectionEnabled);
     useEffect(() => { sectionEnabledRef.current = sectionEnabled; }, [sectionEnabled]);
     const sectionOffsetRef = useRef(sectionOffset);
@@ -641,7 +826,7 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
 
 `updatePlaneFromGizmoRef` exists so the effect that reacts to `sectionEnabled`/`sectionOffset` changes (added later in this task) can invoke the mount-effect-local `updatePlaneFromGizmo` function without re-running the whole mount effect.
 
-In the mount-once effect, after the measurement raycaster/click-handling code from Task 2, add the section-mode setup:
+In the mount-once effect, after the measurement raycaster/click-handling code from Task 3, add the section-mode setup:
 
 ```ts
       const sectionHelper = new Object3D();
@@ -873,7 +1058,7 @@ Add a "Section" toggle button right after the "Measure" button:
         )}
 ```
 
-`ThreeViewer` doesn't currently report the mesh's bounding-sphere radius to the parent, but the sidebar's slider needs it as its min/max range. Add a fourth callback prop, `onBoundingSphereChange: (radius: number) => void`, fired from the STL-load effect in `ThreeViewer` (the effect Task 1 added `active`/BVH handling to) right after `const sphere = geometry.boundingSphere!;`:
+`ThreeViewer` doesn't currently report the mesh's bounding-sphere radius to the parent, but the sidebar's slider needs it as its min/max range. Add a fourth callback prop, `onBoundingSphereChange: (radius: number) => void`, fired from the geometry-load effect in `ThreeViewer` (the effect Task 1 added `active`/BVH handling to and Task 2 rewrote to parse OFF) right after `const sphere = geometry.boundingSphere!;`:
 
 In `ThreeViewer.tsx`, add to the props interface (alongside `onSectionChange` in the block updated above):
 
@@ -881,7 +1066,7 @@ In `ThreeViewer.tsx`, add to the props interface (alongside `onSectionChange` in
   onBoundingSphereChange: (radius: number) => void;
 ```
 
-And in the STL-load effect:
+And in the geometry-load effect:
 
 ```ts
           const sphere = geometry.boundingSphere!;
@@ -890,12 +1075,12 @@ And in the STL-load effect:
 
 (add the matching `onBoundingSphereChangeRef` ref + its sync effect alongside the other callback refs from Tasks 1-3.)
 
-Back in `ViewerPanel.tsx`, update the `ThreeViewer` render (the block Task 2 added `onMeasureChange` to) to its final form for this task:
+Back in `ViewerPanel.tsx`, update the `ThreeViewer` render (the block Task 3 added `onMeasureChange` to) to its final form for this task:
 
 ```tsx
         <ThreeViewer
           ref={threeViewerRef}
-          stlUrl={state.output?.outFileURL ?? null}
+          meshDataUrl={state.output?.outFileURL ?? null}
           active={viewerEngine === 'three'}
           measureEnabled={measureEnabled}
           onMeasureChange={setMeasureState}
@@ -940,15 +1125,15 @@ git commit -m "feat: add free-orientation cross-section clipping plane"
 
 ---
 
-### Task 4: Stencil-buffer filled cap
+### Task 5: Stencil-buffer filled cap
 
 **Files:**
-- Modify: `src/components/ThreeViewer.tsx` (stencil-marking meshes, cap mesh, rebuild-on-STL-reload)
+- Modify: `src/components/ThreeViewer.tsx` (stencil-marking meshes, cap mesh, rebuild-on-reload)
 
 **Interfaces:**
-- Consumes: `sectionPlaneRef.current` (the `Plane` instance from Task 3 — reused, not recomputed), `meshRef.current!.geometry` (rebuilt whenever a new STL loads).
+- Consumes: `sectionPlaneRef.current` (the `Plane` instance from Task 4 — reused, not recomputed), `meshRef.current!.geometry` (rebuilt whenever a new mesh loads).
 
-**Implementation note (deviates from the spec's literal wording in a compatible way):** the spec says the derived plane is "assigned to the mesh material's `clippingPlanes` and `renderer.clippingPlanes`". In practice, only setting it on `materialRef.current!.clippingPlanes` (done in Task 3) is correct and sufficient — `renderer.clippingPlanes` is a *global* list applied to every material in the scene, which would also incorrectly clip the stencil-marking meshes and the cap mesh below (they must render the mesh's *full, unclipped* geometry to compute correct stencil coverage). This task does not touch `renderer.clippingPlanes`; it stays empty. `renderer.localClippingEnabled = true` (already set in Task 3) is what makes per-material `clippingPlanes` work.
+**Implementation note (deviates from the spec's literal wording in a compatible way):** the spec says the derived plane is "assigned to the mesh material's `clippingPlanes` and `renderer.clippingPlanes`". In practice, only setting it on `materialRef.current!.clippingPlanes` (done in Task 4) is correct and sufficient — `renderer.clippingPlanes` is a *global* list applied to every material in the scene, which would also incorrectly clip the stencil-marking meshes and the cap mesh below (they must render the mesh's *full, unclipped* geometry to compute correct stencil coverage). This task does not touch `renderer.clippingPlanes`; it stays empty. `renderer.localClippingEnabled = true` (already set in Task 4) is what makes per-material `clippingPlanes` work.
 
 **Technique:** classic single-plane stencil cap (the single-plane case of three.js's clipping+stencil example, simplified because there is only one plane so there are no "other planes" to additionally respect):
 1. Render the (already-clipped) main mesh normally — this leaves a hollow cut.
@@ -1098,11 +1283,11 @@ Add a `rebuildSectionCap()` function, defined in the mount-once effect (near `up
       positionCapMeshRef.current = positionCapMesh;
 ```
 
-Note `rebuildSectionCap` calls `positionCapMeshRef.current()` at its end, and `positionCapMeshRef.current` is assigned to the real `positionCapMesh` function a few lines later in the same effect — this is safe because `rebuildSectionCap` is only ever *invoked* later (from the `sectionEnabled` effect or the STL-load effect below), by which point the mount effect has finished running top-to-bottom and all three ref assignments (`disposeSectionCapRef`, `rebuildSectionCapRef`, `positionCapMeshRef`) are in place.
+Note `rebuildSectionCap` calls `positionCapMeshRef.current()` at its end, and `positionCapMeshRef.current` is assigned to the real `positionCapMesh` function a few lines later in the same effect — this is safe because `rebuildSectionCap` is only ever *invoked* later (from the `sectionEnabled` effect or the geometry-load effect below), by which point the mount effect has finished running top-to-bottom and all three ref assignments (`disposeSectionCapRef`, `rebuildSectionCapRef`, `positionCapMeshRef`) are in place.
 
 - [ ] **Step 2: Call `rebuildSectionCap`/`positionCapMesh` at the right times**
 
-In the `sectionEnabled`-driven effect from Task 3, after `updatePlaneFromGizmoRef.current();` in the `if (sectionEnabled)` branch, add:
+In the `sectionEnabled`-driven effect from Task 4, after `updatePlaneFromGizmoRef.current();` in the `if (sectionEnabled)` branch, add:
 
 ```ts
         rebuildSectionCapRef.current();
@@ -1136,13 +1321,13 @@ And in the `else` branch (section mode turning off), add `disposeSectionCapRef.c
     }, [sectionEnabled]);
 ```
 
-Update `updatePlaneFromGizmo` (Task 3) to reposition the cap whenever the plane changes — at the end of that function (right after `onSectionChangeRef.current({...});`), add:
+Update `updatePlaneFromGizmo` (Task 4) to reposition the cap whenever the plane changes — at the end of that function (right after `onSectionChangeRef.current({...});`), add:
 
 ```ts
         positionCapMeshRef.current();
 ```
 
-In the STL-load effect (Task 1/2), after the new mesh is added to the scene and its bounds tree computed, rebuild the cap if section mode is currently active:
+In the geometry-load effect (Tasks 1/2), after the new mesh is added to the scene and its bounds tree computed, rebuild the cap if section mode is currently active:
 
 ```ts
           const mesh = new Mesh(geometry, materialRef.current!);
@@ -1175,11 +1360,14 @@ git commit -m "feat: add stencil-buffer filled cap to cross-section tool"
 
 ## Stage 3.1 acceptance criteria (from the spec)
 
-- [ ] Click on mesh face shows XYZ coordinates in the UI — Task 2
-- [ ] Two-click distance measurement works for typical part sizes — Task 2
-- [ ] Cross-section slider/gizmo clips the mesh with a filled cap — Tasks 3 & 4
+- [ ] Click on mesh face shows XYZ coordinates in the UI — Task 3
+- [ ] Two-click distance measurement works for typical part sizes — Task 3
+- [ ] Cross-section slider/gizmo clips the mesh with a filled cap — Tasks 4 & 5
 
-After Task 4's commit, if all manual verifications passed, tag the milestone:
+(Task 2 is a prerequisite fix, not itself a Stage 3.1 acceptance criterion — it makes the Three.js
+viewer render a mesh at all, which the criteria above assume.)
+
+After Task 5's commit, if all manual verifications passed, tag the milestone:
 
 ```bash
 git tag stage-3.1-complete
