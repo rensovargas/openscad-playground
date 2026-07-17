@@ -208,7 +208,7 @@ export default function ViewerPanel({className, style}: {className?: string, sty
         top: 4,
         left: 4,
         right: 4,
-        zIndex: 20,
+        zIndex: 10000,
         display: 'flex',
         gap: '4px',
         alignItems: 'center',
