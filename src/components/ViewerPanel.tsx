@@ -386,7 +386,7 @@ export default function ViewerPanel({className, style}: {className?: string, sty
           onSectionOffsetChange={(offset) => setSectionState(s => ({ ...s, offset }))}
           onResetSection={() => {
             threeViewerRef.current?.resetSection();
-            setSectionState(DEFAULT_SECTION_STATE);
+            setSectionState(s => ({ ...s, offset: 0 }));
           }}
         />
       )}
