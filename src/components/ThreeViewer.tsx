@@ -445,6 +445,8 @@ const ThreeViewer = forwardRef<ThreeViewerHandle, ThreeViewerProps>(
           meshRef.current = mesh;
 
           if (sectionEnabledRef.current) {
+            sectionHelperRef.current!.position.copy(sphere.center);
+            updatePlaneFromGizmoRef.current();
             rebuildSectionCapRef.current();
           }
 
